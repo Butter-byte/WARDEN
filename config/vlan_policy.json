@@ -1,0 +1,13 @@
+{
+  "_comment": "Client-context policy: MAC address -> (role, assigned VLAN). This table is what makes VLAN assignment dynamic/identity-based instead of port-based. Edit this file and restart the controller to change policy without touching topology or controller code.",
+
+  "default_vlan": 99,
+  "default_role": "unauthenticated",
+
+  "policy": {
+    "00:00:00:00:00:01": { "role": "staff", "vlan": 10 },
+    "00:00:00:00:00:02": { "role": "guest", "vlan": 20 },
+    "00:00:00:00:00:03": { "role": "staff", "vlan": 10 },
+    "00:00:00:00:00:04": { "role": "guest", "vlan": 20 }
+  }
+}

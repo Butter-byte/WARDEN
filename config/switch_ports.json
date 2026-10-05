@@ -1,0 +1,8 @@
+{
+  "_comment": "Maps each switch's OpenFlow datapath ID to its trunk ports (links to other switches). Any port NOT listed here is treated as an access port (host-facing). Must stay in sync with topology/topo.py link definitions.",
+
+  "switches": {
+    "1": { "name": "s1", "trunk_ports": [3] },
+    "2": { "name": "s2", "trunk_ports": [3] }
+  }
+}

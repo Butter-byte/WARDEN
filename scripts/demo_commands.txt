@@ -1,0 +1,31 @@
+Run these INSIDE the Mininet CLI (mininet>) once start_topology.sh has booted it.
+Watch the controller's terminal at the same time -- it logs every VLAN
+assignment decision live, which is the best thing to show the reviewer.
+
+1. Prove same-VLAN hosts can talk (both staff, different switches):
+   mininet> h1 ping -c 3 h3
+
+2. Prove same-VLAN hosts can talk (both guest, different switches):
+   mininet> h2 ping -c 3 h4
+
+3. Prove cross-VLAN hosts CANNOT talk (same switch, different VLAN):
+   mininet> h1 ping -c 3 h2
+
+4. Prove cross-VLAN hosts CANNOT talk (different switch, different VLAN):
+   mininet> h1 ping -c 3 h4
+
+5. Full matrix at once (expect exactly 50% loss -- only same-VLAN pairs succeed):
+   mininet> pingall
+
+6. Inspect the flows the controller actually installed on a switch:
+   mininet> sh ovs-ofctl -O OpenFlow13 dump-flows s1
+   mininet> sh ovs-ofctl -O OpenFlow13 dump-flows s2
+
+--- Optional bonus: mobility proof (if time permits before the review) ---
+In a mininet> prompt:
+   mininet> py net.configLinkStatus('s1', 'h2', 'down')
+Then physically attach h2's link to s2 instead (requires editing the
+topology or using net.addLink dynamically) and re-ping h4. The controller
+log will show h2 re-learned on a new dpid/port, still assigned VLAN 20 --
+proving assignment follows identity, not the port. This is scoped as a
+stretch goal for the live demo, not required for the prototype to work.
