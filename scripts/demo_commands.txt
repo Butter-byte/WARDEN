@@ -21,11 +21,38 @@ assignment decision live, which is the best thing to show the reviewer.
    mininet> sh ovs-ofctl -O OpenFlow13 dump-flows s1
    mininet> sh ovs-ofctl -O OpenFlow13 dump-flows s2
 
---- Optional bonus: mobility proof (if time permits before the review) ---
-In a mininet> prompt:
-   mininet> py net.configLinkStatus('s1', 'h2', 'down')
-Then physically attach h2's link to s2 instead (requires editing the
-topology or using net.addLink dynamically) and re-ping h4. The controller
-log will show h2 re-learned on a new dpid/port, still assigned VLAN 20 --
-proving assignment follows identity, not the port. This is scoped as a
-stretch goal for the live demo, not required for the prototype to work.
+--- Mobility proof: h1 roams from s1 to s2, keeps its VLAN ---
+topo.py already gives h1 a second (standby) link to s2 on port 4, brought
+down at boot. This sequence makes it live -- it's the single best moment
+to show the reviewer, since it proves VLAN assignment follows identity,
+not the port it's plugged into.
+
+1. Baseline -- confirm h1 reaches h3 (both staff/VLAN10) via s1:
+   mininet> h1 ping -c 3 h3
+
+2. "Unplug" h1 from s1 and "plug it in" at s2 instead (both ends of each
+   link go down/up together, so this is the mininet-correct way to do it
+   -- don't use `ip link set` from inside the host alone):
+   mininet> py net.configLinkStatus('h1', 's1', 'down')
+   mininet> py net.configLinkStatus('h1', 's2', 'up')
+
+3. Move h1's IP from its old interface to the new one (the IP doesn't
+   follow automatically -- this models a device reassociating at a new
+   access point):
+   mininet> h1 ip addr flush dev h1-eth0
+   mininet> h1 ip addr add 10.0.0.1/24 dev h1-eth1
+
+4. Re-ping h3 -- should still succeed, now routed entirely through s2:
+   mininet> h1 ping -c 3 h3
+
+5. Watch the CONTROLLER terminal while step 4 runs. You should see:
+   [MOBILITY] host=00:00:00:00:00:01 moved from dpid=1 port=1 to dpid=2 port=4
+   [VLAN-ASSIGN] host=00:00:00:00:00:01 role=staff -> VLAN=10 (dpid=2 port=4) <-- re-learned (mobility)
+   That log line, live, is the proof: same policy file, same VLAN, zero
+   reconfiguration -- just a different physical attachment point.
+
+To reset back to the original wiring before re-running the whole demo:
+   mininet> py net.configLinkStatus('h1', 's2', 'down')
+   mininet> py net.configLinkStatus('h1', 's1', 'up')
+   mininet> h1 ip addr flush dev h1-eth1
+   mininet> h1 ip addr add 10.0.0.1/24 dev h1-eth0

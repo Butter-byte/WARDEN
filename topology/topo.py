@@ -39,8 +39,15 @@ class VlanTopo(Topo):
         self.addLink(h1, s1, port2=1)
         self.addLink(h2, s1, port2=2)
 
-        # h1's mobility link to s2 (initially disabled at runtime)
-        self.addLink(h1, s2, port2=4)
+        # h1's mobility link to s2 (initially disabled at runtime).
+        # addr1 pins h1's MAC on THIS interface too -- without it, Mininet
+        # auto-generates a random MAC for h1-eth1, which makes the roamed
+        # host look like a completely different, unrecognized device to
+        # the controller (falls into the default/quarantine VLAN instead
+        # of being recognized as h1). Real devices keep the same MAC when
+        # they roam to a new access point -- same NIC, different
+        # attachment point -- so this models that correctly.
+        self.addLink(h1, s2, port2=4, addr1="00:00:00:00:00:01")
 
         self.addLink(h3, s2, port2=1)
         self.addLink(h4, s2, port2=2)

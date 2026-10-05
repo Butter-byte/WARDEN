@@ -45,6 +45,10 @@ class VlanController(app_manager.RyuApp):
         # { dpid: { mac: (port, vlan) } }  -- what the controller has learned
         self.mac_table = {}
 
+        # { dpid: datapath }  -- needed so we can push flow-deletes to
+        # EVERY switch when a host moves, not just the one it moved to/from.
+        self.datapaths = {}
+
         self._load_config()
         self.vlan_manager = VLANManager({
             "policy": {
@@ -115,8 +119,32 @@ class VlanController(app_manager.RyuApp):
         self._add_flow(datapath, FLOW_PRIORITY_TABLE_MISS, match, actions)
 
         self.mac_table.setdefault(datapath.id, {})
+        self.datapaths[datapath.id] = datapath
         self.logger.info("[SWITCH] dpid=%s connected, table-miss flow installed",
                           datapath.id)
+
+    def _flush_flows_for_mac(self, mac):
+        """Delete any installed flow, on any switch, that matches this MAC
+        as either source or destination. Called the moment mobility_manager
+        confirms a host has moved, so a stale cached flow from its old
+        location can never blackhole traffic -- the next packet for this
+        host is forced back through packet_in for a fresh decision."""
+        flushed = 0
+        for dpid, datapath in self.datapaths.items():
+            ofproto = datapath.ofproto
+            parser = datapath.ofproto_parser
+            for match in (parser.OFPMatch(eth_src=mac), parser.OFPMatch(eth_dst=mac)):
+                mod = parser.OFPFlowMod(
+                    datapath=datapath,
+                    command=ofproto.OFPFC_DELETE,
+                    out_port=ofproto.OFPP_ANY,
+                    out_group=ofproto.OFPG_ANY,
+                    match=match,
+                )
+                datapath.send_msg(mod)
+            flushed += 1
+        self.logger.info("[MOBILITY] flushed cached flows for %s across %d switch(es)",
+                          mac, flushed)
 
     def _add_flow(self, datapath, priority, match, actions, idle_timeout=0):
         ofproto = datapath.ofproto
@@ -174,6 +202,17 @@ class VlanController(app_manager.RyuApp):
                 dpid,
                 in_port,
             )
+            # Any flow cached anywhere in the topology that references this
+            # host's MAC (as either src or dst) now points at a stale port
+            # and will silently blackhole traffic until it idle-times-out.
+            # Flush it immediately instead of waiting on the timeout.
+            self._flush_flows_for_mac(src)
+            # Also drop the stale learned entry on the switch it left, so
+            # that switch doesn't keep offering a dead port as a forwarding
+            # target for this host.
+            old_table = self.mac_table.get(previous["dpid"])
+            if old_table is not None:
+                old_table.pop(src, None)
 
         if prev is None or prev[0] != in_port or prev[1] != src_vlan:
             self.logger.info(

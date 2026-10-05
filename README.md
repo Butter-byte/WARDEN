@@ -1,5 +1,5 @@
-# Context-Aware Dynamic VLAN Segmentation using SDN
-### Tonight's prototype scope: Module 1 (Topology) + Module 2 (Dynamic VLAN Assignment)
+# WARDEN — Context-Aware Dynamic VLAN Segmentation using SDN
+### Prototype scope: Module 1 (Topology) + Module 2 (Dynamic VLAN Assignment, incl. live mobility demo)
 
 ## 1. Environment setup
 
@@ -37,18 +37,20 @@ eventlet==0.30.1` inside it.
 ## 2. Project layout
 
 ```
-sdn-vlan-project/
+WARDEN/
 ├── controller/
-│   └── vlan_controller.py     # Ryu app: dynamic VLAN assignment (Module 2)
+│   ├── vlan_controller.py     # Ryu app: packet_in handling, flow install, 802.1Q push/pop
+│   ├── vlan_manager.py        # MAC -> (role, VLAN) policy lookup
+│   └── mobility_manager.py    # tracks each host's current (dpid, port), detects moves
 ├── topology/
-│   └── topo.py                # Mininet topology (Module 1)
+│   └── topo.py                # Mininet topology (Module 1) -- h1 has a standby link to s2
 ├── config/
 │   ├── vlan_policy.json       # MAC -> role -> VLAN policy table
 │   └── switch_ports.json      # which ports are trunk vs access, per switch
 ├── scripts/
 │   ├── run_demo.sh            # launch the controller
 │   ├── start_topology.sh      # launch Mininet
-│   └── demo_commands.txt      # live-demo command cheat sheet
+│   └── demo_commands.txt      # live-demo command cheat sheet, incl. mobility sequence
 └── README.md
 ```
 
@@ -85,7 +87,7 @@ To fully shut down between runs: in the mininet CLI run `exit`, then
 | Existing Work Gap | `config/vlan_policy.json` shows assignment is driven by identity (MAC/role), not port — the gap this project targets |
 | Modules 3-6 | Not built tonight; this prototype is deliberately scoped to the guaranteed core so there's a fully working demo for Review 1 |
 
-## 5. Known limitations (be upfront about these in the review if asked)
+## 5. Known limitations
 
 - VLAN policy is keyed by MAC address only — no real authentication yet.
   That's intentionally deferred; Module 4 (security-reactive response) will
