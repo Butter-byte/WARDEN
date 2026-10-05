@@ -35,9 +35,13 @@ class VlanTopo(Topo):
         h3 = self.addHost("h3", mac="00:00:00:00:00:03", ip="10.0.0.3/24")
         h4 = self.addHost("h4", mac="00:00:00:00:00:04", ip="10.0.0.4/24")
 
-        # Access links — explicit ports so they match switch_ports.json
+        # Access links — explicit ports
         self.addLink(h1, s1, port2=1)
         self.addLink(h2, s1, port2=2)
+
+        # h1's mobility link to s2 (initially disabled at runtime)
+        self.addLink(h1, s2, port2=4)
+
         self.addLink(h3, s2, port2=1)
         self.addLink(h4, s2, port2=2)
 
@@ -56,6 +60,8 @@ def run():
         "c0", controller=RemoteController, ip="127.0.0.1", port=6633
     )
     net.start()
+    # Keep h1 attached to s1 initially; s2 is the standby link.
+    net.configLinkStatus("h1", "s2", "down")
 
     info("\n*** VLAN SDN demo topology up.\n")
     info("*** h1,h3 = policy VLAN10 (staff) | h2,h4 = policy VLAN20 (guest)\n")

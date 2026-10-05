@@ -24,6 +24,9 @@ from ryu.controller.handler import set_ev_cls
 from ryu.ofproto import ofproto_v1_3
 from ryu.lib.packet import packet, ethernet, ether_types
 
+from vlan_manager import VLANManager
+from mobility_manager import MobilityManager
+
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 POLICY_PATH = os.path.join(BASE_DIR, "config", "vlan_policy.json")
 PORTS_PATH = os.path.join(BASE_DIR, "config", "switch_ports.json")
@@ -43,6 +46,19 @@ class VlanController(app_manager.RyuApp):
         self.mac_table = {}
 
         self._load_config()
+        self.vlan_manager = VLANManager({
+            "policy": {
+                mac: {
+                    "vlan": vlan,
+                    "role": self.roles.get(mac, "unauthenticated"),
+                }
+                for mac, vlan in self.policy.items()
+            },
+            "default_vlan": self.default_vlan,
+            "default_role": "unauthenticated",
+        })
+
+        self.mobility_manager = MobilityManager(self.trunk_ports)
         self.logger.info("[INIT] Loaded VLAN policy for %d known hosts",
                           len(self.policy))
         self.logger.info("[INIT] Default/unassigned-host VLAN = %s",
@@ -135,16 +151,41 @@ class VlanController(app_manager.RyuApp):
         src, dst = eth.src, eth.dst
         self.mac_table.setdefault(dpid, {})
 
-        src_vlan = self._vlan_for(src)
+        context = self.vlan_manager.get_context(src)
+        src_vlan = context["vlan"]
+        role = context["role"]
 
-        # ---- Learn / detect (re)assignment ----
+        # ---- Learn / detect mobility ----
         prev = self.mac_table[dpid].get(src)
+
+        moved, previous = self.mobility_manager.update_location(
+            src,
+            dpid,
+            in_port,
+        )
+
+        if moved:
+            self.logger.info(
+                "[MOBILITY] host=%s moved from dpid=%s port=%s "
+                "to dpid=%s port=%s",
+                src,
+                previous["dpid"],
+                previous["port"],
+                dpid,
+                in_port,
+            )
+
         if prev is None or prev[0] != in_port or prev[1] != src_vlan:
             self.logger.info(
-                "[VLAN-ASSIGN] host=%s role=%s -> VLAN=%s  (dpid=%s port=%s)%s",
-                src, self._role_for(src), src_vlan, dpid, in_port,
-                "  <-- re-learned (mobility)" if prev else "",
+                "[VLAN-ASSIGN] host=%s role=%s -> VLAN=%s (dpid=%s port=%s)%s",
+                src,
+                role,
+                src_vlan,
+                dpid,
+                in_port,
+                " <-- re-learned (mobility)" if prev else "",
             )
+
         self.mac_table[dpid][src] = (in_port, src_vlan)
 
         # ---- Decide output ports, scoped strictly to src_vlan ----
@@ -153,7 +194,18 @@ class VlanController(app_manager.RyuApp):
         if not out_ports:
             return  # nothing valid to forward to (e.g. isolated / unknown)
 
-        actions = [parser.OFPActionOutput(p) for p in out_ports]
+        actions = []
+
+        for out_port in out_ports:
+            actions.extend(
+                self._vlan_actions(
+                    parser,
+                    dpid,
+                    in_port,
+                    out_port,
+                    src_vlan,
+                )
+            )
 
         # If exactly one known unicast destination on this switch and it's
         # in the same VLAN, install a direct flow so future packets skip
@@ -161,8 +213,9 @@ class VlanController(app_manager.RyuApp):
         if len(out_ports) == 1 and dst in self.mac_table[dpid]:
             dst_port, dst_vlan = self.mac_table[dpid][dst]
             if dst_vlan == src_vlan:
-                match = parser.OFPMatch(in_port=in_port, eth_src=src, eth_dst=dst)
-                self._add_flow(datapath, FLOW_PRIORITY_DIRECT, match, actions,
+                match = parser.OFPMatch(in_port=in_port, eth_src=src, eth_dst=dst, vlan_vid=0)
+                flow_actions = self._vlan_actions(parser, dpid, in_port, dst_port, src_vlan)
+                self._add_flow(datapath, FLOW_PRIORITY_DIRECT, match, flow_actions,
                                 idle_timeout=FLOW_IDLE_TIMEOUT)
 
         data = None
@@ -208,3 +261,21 @@ class VlanController(app_manager.RyuApp):
                 out_ports.append(port)
 
         return out_ports
+    
+    def _vlan_actions(self, parser, dpid, in_port, out_port, vlan):
+        """
+        Apply VLAN tagging when forwarding between access and trunk ports.
+        """
+        trunk_ports = self.trunk_ports.get(dpid, set())
+
+        actions = []
+
+        if in_port not in trunk_ports and out_port in trunk_ports:
+            actions.append(parser.OFPActionPushVlan(0x8100))
+            actions.append(parser.OFPActionSetField(vlan_vid=0x1000 | vlan))
+
+        elif in_port in trunk_ports and out_port not in trunk_ports:
+            actions.append(parser.OFPActionPopVlan())
+
+        actions.append(parser.OFPActionOutput(out_port))
+        return actions
