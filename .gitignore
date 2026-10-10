@@ -33,3 +33,5 @@ Thumbs.db
 
 # Generated experiment results
 results/generated/
+__pycache__/
+*.pyc

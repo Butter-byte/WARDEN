@@ -1,13 +1,13 @@
 {
-  "_comment": "Client-context policy: MAC address -> (role, assigned VLAN). This table is what makes VLAN assignment dynamic/identity-based instead of port-based. Edit this file and restart the controller to change policy without touching topology or controller code.",
+  "_comment": "Client-context policy: MAC address -> (role, assigned VLAN, trusted IP). The 'ip' field is used by the Module 3 anomaly detector as a trusted MAC<->IP binding table to catch ARP spoofing -- it must match the static IPs assigned in topology/topo.py. Edit this file and restart the controller/detector to change policy without touching topology or code.",
 
   "default_vlan": 99,
   "default_role": "unauthenticated",
 
   "policy": {
-    "00:00:00:00:00:01": { "role": "staff", "vlan": 10 },
-    "00:00:00:00:00:02": { "role": "guest", "vlan": 20 },
-    "00:00:00:00:00:03": { "role": "staff", "vlan": 10 },
-    "00:00:00:00:00:04": { "role": "guest", "vlan": 20 }
+    "00:00:00:00:00:01": { "role": "staff", "vlan": 10, "ip": "10.0.0.1" },
+    "00:00:00:00:00:02": { "role": "guest", "vlan": 20, "ip": "10.0.0.2" },
+    "00:00:00:00:00:03": { "role": "staff", "vlan": 10, "ip": "10.0.0.3" },
+    "00:00:00:00:00:04": { "role": "guest", "vlan": 20, "ip": "10.0.0.4" }
   }
 }

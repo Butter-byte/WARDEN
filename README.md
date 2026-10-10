@@ -51,6 +51,10 @@ WARDEN/
 │   ├── run_demo.sh            # launch the controller
 │   ├── start_topology.sh      # launch Mininet
 │   └── demo_commands.txt      # live-demo command cheat sheet, incl. mobility sequence
+├── detection/
+│   ├── arp_spoof_detector.py  # Module 3: standalone Scapy ARP-spoof / flood detector
+│   ├── simulate_arp_spoof.py  # test helper -- fires a forged ARP reply to trigger it
+│   └── README.md              # Module 3 setup + test walkthrough
 └── README.md
 ```
 
@@ -85,9 +89,10 @@ To fully shut down between runs: in the mininet CLI run `exit`, then
 | Proposed Methodology, Phase 1 | `topology/topo.py` — multi-switch OpenFlow topology |
 | Proposed Methodology, Phase 2 | `controller/vlan_controller.py` — policy-driven VLAN assignment, decoupled from physical port |
 | Existing Work Gap | `config/vlan_policy.json` shows assignment is driven by identity (MAC/role), not port — the gap this project targets |
-| Modules 3-6 | Not built tonight; this prototype is deliberately scoped to the guaranteed core so there's a fully working demo for Review 1 |
+| Proposed Methodology, Phase 3 | `detection/arp_spoof_detector.py` — standalone anomaly detection, decoupled from the control plane |
+| Modules 4-6 | Not built yet; Module 4 (security-reactive response) is the next phase, wiring the detector into the controller via a REST hook |
 
-## 5. Known limitations
+## 5. Known limitations (be upfront about these in the review if asked)
 
 - VLAN policy is keyed by MAC address only — no real authentication yet.
   That's intentionally deferred; Module 4 (security-reactive response) will

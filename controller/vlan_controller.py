@@ -24,8 +24,14 @@ from ryu.controller.handler import set_ev_cls
 from ryu.ofproto import ofproto_v1_3
 from ryu.lib.packet import packet, ethernet, ether_types
 
+from ryu.app.wsgi import ControllerBase, WSGIApplication, route, Response
+
 from vlan_manager import VLANManager
 from mobility_manager import MobilityManager
+
+import re
+
+MAC_RE = re.compile(r"^([0-9a-f]{2}:){5}[0-9a-f]{2}$")
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 POLICY_PATH = os.path.join(BASE_DIR, "config", "vlan_policy.json")
@@ -38,6 +44,7 @@ FLOW_PRIORITY_TABLE_MISS = 0
 
 class VlanController(app_manager.RyuApp):
     OFP_VERSIONS = [ofproto_v1_3.OFP_VERSION]
+    _CONTEXTS = {"wsgi": WSGIApplication}
 
     def __init__(self, *args, **kwargs):
         super(VlanController, self).__init__(*args, **kwargs)
@@ -63,6 +70,11 @@ class VlanController(app_manager.RyuApp):
         })
 
         self.mobility_manager = MobilityManager(self.trunk_ports)
+
+        # Module 4: expose the REST hook the anomaly detector calls.
+        wsgi = kwargs["wsgi"]
+        wsgi.register(QuarantineController, {"app": self})
+
         self.logger.info("[INIT] Loaded VLAN policy for %d known hosts",
                           len(self.policy))
         self.logger.info("[INIT] Default/unassigned-host VLAN = %s",
@@ -145,6 +157,45 @@ class VlanController(app_manager.RyuApp):
             flushed += 1
         self.logger.info("[MOBILITY] flushed cached flows for %s across %d switch(es)",
                           mac, flushed)
+
+    # ------------------------------------------------------------------
+    # Module 4: security-reactive response
+    # ------------------------------------------------------------------
+    def _set_host_vlan(self, mac, vlan, role):
+        """Change a host's VLAN everywhere the controller tracks it:
+        the policy manager, the learned table on every switch, and any
+        cached flows. Shared by quarantine and release."""
+        self.vlan_manager.update_assignment(mac, vlan, role=role)
+
+        # Keep the learned table consistent so other hosts' unicast
+        # lookups see the new VLAN immediately, not after the next packet.
+        for dpid, table in self.mac_table.items():
+            if mac in table:
+                port, _ = table[mac]
+                table[mac] = (port, vlan)
+
+        self._flush_flows_for_mac(mac)
+
+    def quarantine_host(self, mac, reason="unspecified"):
+        mac = mac.lower()
+        q_vlan = self.vlan_manager.default_vlan  # 99 by policy
+        self._set_host_vlan(mac, q_vlan, role="quarantined")
+        self.logger.warning(
+            "[QUARANTINE] host=%s moved to isolated VLAN=%s (reason: %s)",
+            mac, q_vlan, reason,
+        )
+        return {"status": "quarantined", "mac": mac, "vlan": q_vlan, "reason": reason}
+
+    def release_host(self, mac):
+        mac = mac.lower()
+        original_vlan = self.policy.get(mac, self.default_vlan)
+        original_role = self.roles.get(mac, "unauthenticated")
+        self._set_host_vlan(mac, original_vlan, role=original_role)
+        self.logger.info(
+            "[RELEASE] host=%s restored to policy VLAN=%s role=%s",
+            mac, original_vlan, original_role,
+        )
+        return {"status": "released", "mac": mac, "vlan": original_vlan, "role": original_role}
 
     def _add_flow(self, datapath, priority, match, actions, idle_timeout=0):
         ofproto = datapath.ofproto
@@ -318,3 +369,46 @@ class VlanController(app_manager.RyuApp):
 
         actions.append(parser.OFPActionOutput(out_port))
         return actions
+
+
+class QuarantineController(ControllerBase):
+    """REST hook used by the Module 3 detector (detection/arp_spoof_detector.py).
+    POST /quarantine {"mac": "...", "reason": "..."}
+    POST /release    {"mac": "..."}
+    """
+
+    def __init__(self, req, link, data, **config):
+        super(QuarantineController, self).__init__(req, link, data, **config)
+        self.app = data["app"]
+
+    def _reply(self, status, payload):
+        return Response(
+            status=status,
+            content_type="application/json",
+            body=json.dumps(payload).encode("utf-8"),
+        )
+
+    def _parse(self, req):
+        try:
+            body = json.loads(req.body.decode("utf-8"))
+        except (ValueError, UnicodeDecodeError):
+            return None, "body must be valid JSON"
+        mac = str(body.get("mac", "")).lower()
+        if not MAC_RE.match(mac):
+            return None, "missing or malformed 'mac'"
+        return body, mac
+
+    @route("warden", "/quarantine", methods=["POST"])
+    def quarantine(self, req, **kwargs):
+        body, result = self._parse(req)
+        if body is None:
+            return self._reply(400, {"error": result})
+        return self._reply(200, self.app.quarantine_host(
+            result, reason=body.get("reason", "unspecified")))
+
+    @route("warden", "/release", methods=["POST"])
+    def release(self, req, **kwargs):
+        body, result = self._parse(req)
+        if body is None:
+            return self._reply(400, {"error": result})
+        return self._reply(200, self.app.release_host(result))
