@@ -1,119 +1,49 @@
 LIVE DEMO COMMAND SHEET
 =======================
+Terminals: 1 controller | 2 Mininet | 3 sensor | browser at http://127.0.0.1:8080/
+  1. bash scripts/run_demo.sh
+  2. bash scripts/start_topology.sh
+  3. sudo ~/ryu-venv/bin/python3 detection/sensor.py --iface s1-eth3
+Replace /home/hrishig and the repo folder with your own. Inside mininet>, ~ means /root.
 
-Setup: four terminals.
-  1. Controller:  bash scripts/run_demo.sh
-  2. Mininet:     bash scripts/start_topology.sh   (gives the mininet> prompt)
-  3. Detector:    sudo ~/ryu-venv/bin/python3 detection/arp_spoof_detector.py --iface s1-eth3
-  4. Spare shell for curl checks.
+PART 1 - segmentation (Modules 1+2)
+  mininet> h1 ping -c 3 h3          works (VLAN 10, across the trunk)
+  mininet> h2 ping -c 3 h4          works (VLAN 20)
+  mininet> h1 ping -c 3 h2          fails (cross-VLAN)
+  mininet> pingall                  4 of 12 succeed
+  mininet> sh ovs-ofctl -O OpenFlow13 dump-flows s1
 
-Replace /home/hrishig and sdn-vlan-project with your own paths.
-Mininet runs inside its own namespaces, so use absolute paths in host commands.
-Inside Mininet, ~ means /root.
+PART 2 - mobility (h1 roams s1 -> s2 and keeps VLAN 10)
+  mininet> py net.configLinkStatus('h1', 's1', 'down')
+  mininet> py net.configLinkStatus('h1', 's2', 'up')
+  mininet> h1 ip addr flush dev h1-eth0
+  mininet> h1 ip addr add 10.0.0.1/24 dev h1-eth1
+  mininet> h1 ping -c 3 h3          works; dashboard shows h1 under s2
+  reset:
+  mininet> py net.configLinkStatus('h1', 's2', 'down')
+  mininet> py net.configLinkStatus('h1', 's1', 'up')
+  mininet> h1 ip addr flush dev h1-eth1
+  mininet> h1 ip addr add 10.0.0.1/24 dev h1-eth0
 
--------------------------------------------------------------------------
-PART 1 -- Module 1 + 2: topology and context-aware VLAN segmentation
--------------------------------------------------------------------------
+PART 3 - detection and automatic quarantine (Modules 3+4)
+Set SIM="/home/hrishig/ryu-venv/bin/python3 /home/hrishig/projects/sdn-vlan-project/detection/simulate_attacks.py"
+  mininet> h3 $SIM arp-spoof     --iface h3-eth0 --victim-ip 10.0.0.1     -> arp-spoof, h3 quarantined
+  mininet> h3 $SIM port-scan     --iface h3-eth0 --target-ip 10.0.0.1     -> port-scan, h3 quarantined
+  mininet> h1 $SIM vlan-hop      --iface h1-eth0 --forged-vlan 20         -> vlan-violation, h1 quarantined
+  mininet> h3 $SIM mac-flood     --iface h3-eth0                          -> mac-flood (alert only)
+  mininet> h3 $SIM traffic-flood --iface h3-eth0 --target-ip 10.0.0.1     -> traffic-rate (alert only)
+  mininet> h3 $SIM rogue-device  --iface h3-eth0                          -> unauthorized-device (alert only)
+After a quarantine: h1 ping -c 2 h3 fails, h2 ping -c 2 h4 still works.
+Release from the dashboard (Release button) or:
+  curl -s -X POST http://127.0.0.1:8080/release -H "Content-Type: application/json" -d '{"mac":"00:00:00:00:00:03"}'
 
-1. Same-VLAN, cross-switch (should work):
-   mininet> h1 ping -c 3 h3
-   mininet> h2 ping -c 3 h4
+AUTOMATED
+  python -m pytest tests/ -v                 unit tests
+  sudo python3 topology/anomaly_test.py      end-to-end (exit Mininet first; controller + sensor running)
 
-2. Cross-VLAN (should fail):
-   mininet> h1 ping -c 3 h2
-   mininet> h1 ping -c 3 h4
-
-3. Full matrix (expect 4 of 12 to succeed, the same-VLAN directed pairs):
-   mininet> pingall
-
-4. Inspect installed flows:
-   mininet> sh ovs-ofctl -O OpenFlow13 dump-flows s1
-   mininet> sh ovs-ofctl -O OpenFlow13 dump-flows s2
-
--------------------------------------------------------------------------
-PART 2 -- Module 2: mobility (h1 roams from s1 to s2 and keeps VLAN 10)
--------------------------------------------------------------------------
-
-1. Baseline:
-   mininet> h1 ping -c 3 h3
-
-2. Move h1 from s1 to s2. Both ends of each link change state together,
-   so use net.configLinkStatus instead of ip link inside the host:
-   mininet> py net.configLinkStatus('h1', 's1', 'down')
-   mininet> py net.configLinkStatus('h1', 's2', 'up')
-
-3. Move the IP to the new interface:
-   mininet> h1 ip addr flush dev h1-eth0
-   mininet> h1 ip addr add 10.0.0.1/24 dev h1-eth1
-
-4. Ping h3. It should succeed, now routed through s2:
-   mininet> h1 ping -c 3 h3
-
-   Controller terminal should show:
-     [MOBILITY] host=00:00:00:00:00:01 moved from dpid=1 port=1 to dpid=2 port=4
-     [MOBILITY] flushed cached flows for 00:00:00:00:00:01 across 2 switch(es)
-     [VLAN-ASSIGN] host=00:00:00:00:00:01 role=staff -> VLAN=10 (dpid=2 port=4) <-- re-learned (mobility)
-
-5. Reset to the original wiring:
-   mininet> py net.configLinkStatus('h1', 's2', 'down')
-   mininet> py net.configLinkStatus('h1', 's1', 'up')
-   mininet> h1 ip addr flush dev h1-eth1
-   mininet> h1 ip addr add 10.0.0.1/24 dev h1-eth0
-
--------------------------------------------------------------------------
-PART 3 -- Module 3: ARP-spoof detection (alert only)
--------------------------------------------------------------------------
-
-Run this part with the detector in alert-only mode, so Part 4 is the only
-place a quarantine happens. Stop the detector (Ctrl+C) and restart it with:
-   sudo ~/ryu-venv/bin/python3 detection/arp_spoof_detector.py --iface s1-eth3 --no-respond
-
-1. Prime with a normal exchange:
-   mininet> h1 ping -c 2 h3
-
-2. Attack (h3 claims to be h1):
-   mininet> h3 /home/hrishig/ryu-venv/bin/python3 /home/hrishig/projects/sdn-vlan-project/detection/simulate_arp_spoof.py --victim-ip 10.0.0.1 --iface h3-eth0
-
-   Detector terminal shows:
-     [ALERT][ARP-SPOOF] 10.0.0.1 is policy-bound to 00:00:00:00:00:01, but a reply just claimed it from 00:00:00:00:00:03!
-
--------------------------------------------------------------------------
-PART 4 -- Module 4: automatic quarantine on detection
--------------------------------------------------------------------------
-
-Restart the detector in full mode (no --no-respond):
-   sudo ~/ryu-venv/bin/python3 detection/arp_spoof_detector.py --iface s1-eth3
-
-1. Reset state, in case Part 3 left h3 in quarantine:
-   curl -s -X POST http://127.0.0.1:8080/release -H "Content-Type: application/json" -d '{"mac":"00:00:00:00:00:03"}'
-
-2. Baseline:
-   mininet> h1 ping -c 2 h3          (should succeed)
-
-3. Attack:
-   mininet> h3 /home/hrishig/ryu-venv/bin/python3 /home/hrishig/projects/sdn-vlan-project/detection/simulate_arp_spoof.py --victim-ip 10.0.0.1 --iface h3-eth0
-
-   Detector terminal shows the ALERT line, then:
-     [RESPONSE] quarantine 00:00:00:00:00:03 -> HTTP 200: {"status": "quarantined", ...}
-
-   Controller terminal shows:
-     [QUARANTINE] host=00:00:00:00:00:03 moved to isolated VLAN=99 (reason: ARP spoof claiming 10.0.0.1)
-
-4. Verify isolation:
-   mininet> h1 ping -c 2 h3          (should FAIL: h3 is in VLAN 99)
-   mininet> h2 ping -c 2 h4          (should still SUCCEED: VLAN 20 is unaffected)
-
-5. Restore:
-   curl -s -X POST http://127.0.0.1:8080/release -H "Content-Type: application/json" -d '{"mac":"00:00:00:00:00:03"}'
-   mininet> h1 ping -c 2 h3          (should succeed again)
-
--------------------------------------------------------------------------
 TROUBLESHOOTING
--------------------------------------------------------------------------
-- "Interface not found" on the detector: you used a host interface such as
-  h1-eth0. Use s1-eth3 instead.
-- "No module named scapy": you ran sudo python3. Use sudo ~/ryu-venv/bin/python3.
-- "No such file" inside mininet>: you used ~ or a relative path. Use absolute paths.
-- "controller unreachable" on the detector: the controller is not running, or
-  it is not on port 8080. Check terminal 1.
-- After a failed run: exit Mininet, run `sudo mn -c`, then start again.
+  "Interface not found"      use s1-eth3, not h1-eth0
+  "No module named scapy"    use sudo ~/ryu-venv/bin/python3, not sudo python3
+  "No such file" in mininet> use absolute paths, not ~
+  dashboard says unreachable controller is not running on 127.0.0.1:8080
+  after a failed run         exit Mininet, run `sudo mn -c`, start again

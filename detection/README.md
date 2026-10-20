@@ -1,157 +1,111 @@
-# Module 3 -- Anomaly Detection  |  Module 4 -- Security-Reactive Response
+# Detection layer: engine, sensor, attack simulators
 
-The detector is a standalone Scapy sensor. It runs in its own process,
-separate from the Ryu controller. When it sees an ARP spoof, it sends a
-REST request to the controller, and the controller moves the attacker to
-the isolated VLAN 99.
+```
+packet (Scapy) -> Frame -> DetectionEngine -> Alert --> POST /alerts      (dashboard feed)
+   sensor.py               engine.py                 \-> POST /quarantine (if action = quarantine)
+```
 
-Paths below are relative to the repo root (the folder containing
-`controller/`, `detection/`, `topology/`).
+| File | Role |
+|---|---|
+| `engine.py` | Pure detection logic. No sniffing, no network. Unit-tested. |
+| `sensor.py` | Sniffs a switch port, runs the engine, reports to the controller. |
+| `simulate_attacks.py` | Generates each anomaly from inside a Mininet host. |
+
+## Detectors
+
+| Detector | Triggers when | Action |
+|---|---|---|
+| `arp-spoof` | An ARP packet claims an IP that policy binds to another MAC | quarantine |
+| `vlan-violation` | An 802.1Q tag disagrees with the sender's expected VLAN, or the frame is double-tagged (VLAN hopping) | quarantine |
+| `port-scan` | One MAC sends TCP SYNs to more than 15 distinct ports in 10 s | quarantine |
+| `unauthorized-device` | A MAC that is not in `config/vlan_policy.json` sends traffic | alert only |
+| `mac-flood` | More than 20 distinct source MACs in 5 s | alert only |
+| `traffic-rate` | One MAC sends more than 200 frames in 5 s | alert only |
+
+Alert-only detectors do not quarantine because the evidence does not pin the
+problem on one trusted host (flooding uses spoofed MACs) or because bursty
+traffic can be legitimate. The same `(detector, MAC)` pair alerts at most once
+per 10 s (`--cooldown`).
+
+Design notes:
+- The expected VLAN follows quarantine state. A quarantined host is expected on
+  VLAN 99, so its re-tagged frames are not reported as violations.
+- IPv6 multicast and link-layer control frames (33:33:..., 01:80:c2:...) are
+  ignored. Use `--ignore-mac` for any other infrastructure noise.
+- Only pure TCP SYNs count toward port-scan detection. Replies carry ephemeral
+  destination ports and would look like a scan.
+- ARP probes (sender IP 0.0.0.0) are not treated as claims.
 
 ## Setup (once)
 
 ```bash
 source ~/ryu-venv/bin/activate
-pip install scapy          # Module 4 uses only the standard library
-deactivate
+pip install scapy pytest
 ```
 
-## Why the commands look unusual
+## Run order
 
-- **Interfaces:** Mininet puts each host in its own network namespace.
-  `h1-eth0` exists only inside h1. Use a switch interface such as
-  `s1-eth3` (the trunk) to sniff from your normal shell.
-- **sudo and venv:** `sudo python3` uses the system Python, which has no
-  scapy. Call the venv's Python directly with sudo.
-- **Inside the Mininet CLI, `~` is `/root`**, so `~/ryu-venv` does not
-  exist there. Use absolute paths in `h3 ...` commands. Find your path
-  with `pwd` in a normal terminal.
+Paths below assume the repo root. Replace `/home/hrishig` and the repo folder name with yours.
 
-Replace `/home/hrishig` with your home directory and `sdn-vlan-project`
-with your repo folder name in the commands below.
+| Terminal | Command |
+|---|---|
+| 1. Controller | `bash scripts/run_demo.sh` |
+| 2. Topology | `bash scripts/start_topology.sh` |
+| 3. Sensor | `sudo ~/ryu-venv/bin/python3 detection/sensor.py --iface s1-eth3` |
+| Browser | `http://127.0.0.1:8080/` |
 
-## Test walkthrough (Module 3 alert-only, then Module 4 response)
+Why the commands look unusual:
+- Sniff a switch port (`s1-eth3`, the trunk). Host interfaces such as `h1-eth0`
+  exist only inside the host's namespace.
+- `sudo python3` uses the system Python, which has no scapy. Call the venv's
+  Python directly.
+- Inside `mininet>`, `~` is `/root`. Use absolute paths.
 
-You need **four** terminals.
+Sensor flags: `--no-respond` (alert only), `--cooldown N`, `--ignore-mac MAC`, `--controller-url URL`.
 
-| # | Terminal | Command |
-|---|---|---|
-| 1 | Controller | `bash scripts/run_demo.sh` |
-| 2 | Mininet | `bash scripts/start_topology.sh` |
-| 3 | Detector | see step 3 below |
-| 4 | Normal shell (for curl) | used only for the optional check |
+## Manual attacks (inside mininet>)
 
-### Step 1: start the controller (terminal 1)
-
-Confirm the REST line appears:
 ```
-wsgi ... Starting ... on 127.0.0.1:8080
+mininet> h3 /home/hrishig/ryu-venv/bin/python3 /home/hrishig/projects/sdn-vlan-project/detection/simulate_attacks.py arp-spoof --iface h3-eth0 --victim-ip 10.0.0.1
+mininet> h3 ... simulate_attacks.py port-scan     --iface h3-eth0 --target-ip 10.0.0.1
+mininet> h3 ... simulate_attacks.py mac-flood     --iface h3-eth0
+mininet> h3 ... simulate_attacks.py traffic-flood --iface h3-eth0 --target-ip 10.0.0.1
+mininet> h3 ... simulate_attacks.py rogue-device  --iface h3-eth0
+mininet> h1 ... simulate_attacks.py vlan-hop      --iface h1-eth0 --forged-vlan 20
 ```
 
-### Step 2: start Mininet (terminal 2)
-
-Wait for the `mininet>` prompt.
-
-### Step 3: start the detector on the trunk (terminal 3)
+## Automated tests
 
 ```bash
-sudo ~/ryu-venv/bin/python3 detection/arp_spoof_detector.py --iface s1-eth3
+# Unit tests: no Mininet, no controller needed
+python -m pytest tests/ -v
+
+# End-to-end: controller + sensor running, no interactive Mininet open
+sudo python3 topology/anomaly_test.py
 ```
 
-Expected:
-```
-[*] Module 3 detector listening on s1-eth3  (Ctrl+C to stop)
-[*] Loaded 4 trusted IP<->MAC bindings from policy
-[*] Mode: ALERT + RESPOND   controller: http://127.0.0.1:8080
-```
+The end-to-end run checks, per attack: the alert fires, the right host is
+quarantined (or nobody, for alert-only detectors), the quarantined host is cut
+off, the other VLAN is unaffected, and the host recovers after release. It also
+runs a clean-traffic check that no detector fires on normal pings.
 
-To watch detection without responding, add `--no-respond`.
+## Controller REST API
 
-### Optional: check the REST hook before the attack (terminal 4)
+| Endpoint | Purpose |
+|---|---|
+| `GET /` | Dashboard |
+| `GET /state` | Hosts, VLANs, quarantine state, switches |
+| `GET /alerts?limit=N` | Alerts, controller events, per-detector counts |
+| `POST /alerts` | Sensor submits an alert |
+| `POST /alerts/clear` | Clear the alert feed |
+| `POST /quarantine` `{"mac","reason"}` | Move a host to VLAN 99 |
+| `POST /release` `{"mac"}` | Restore a host to its policy VLAN |
 
-```bash
-curl -s -X POST http://127.0.0.1:8080/release \
-  -H "Content-Type: application/json" \
-  -d '{"mac":"00:00:00:00:00:03"}'
-```
+## Known limitations
 
-Expected: `{"status": "released", "mac": "00:00:00:00:00:03", "vlan": 10, "role": "staff"}`
-
-Note the controller log shows a `[RELEASE]` line. This is harmless. It
-restores h3 to its policy VLAN and confirms the endpoint works.
-
-### Step 4: baseline in the Mininet CLI (terminal 2)
-
-```
-mininet> h1 ping -c 2 h3
-```
-Should succeed (both VLAN 10).
-
-### Step 5: the attack (terminal 2)
-
-```
-mininet> h3 /home/hrishig/ryu-venv/bin/python3 /home/hrishig/projects/sdn-vlan-project/detection/simulate_arp_spoof.py --victim-ip 10.0.0.1 --iface h3-eth0
-```
-
-### Step 6: check the detector (terminal 3)
-
-You should see:
-```
-[ALERT][ARP-SPOOF] 10.0.0.1 is policy-bound to 00:00:00:00:00:01, but a reply just claimed it from 00:00:00:00:00:03!
-[RESPONSE] quarantine 00:00:00:00:00:03 -> HTTP 200: {"status": "quarantined", "mac": "00:00:00:00:00:03", "vlan": 99, "reason": "ARP spoof claiming 10.0.0.1"}
-```
-
-Only one `[RESPONSE]` line appears, even though the attack sends three
-forged replies. The detector sends one quarantine request per attacker MAC.
-
-### Step 7: check the controller (terminal 1)
-
-```
-[QUARANTINE] host=00:00:00:00:00:03 moved to isolated VLAN=99 (reason: ARP spoof claiming 10.0.0.1)
-[MOBILITY] flushed cached flows for 00:00:00:00:00:03 across 2 switch(es)
-```
-
-### Step 8: verify isolation (terminal 2)
-
-```
-mininet> h1 ping -c 2 h3        # should FAIL: h3 is now in VLAN 99
-mininet> h2 ping -c 2 h4        # should still SUCCEED: VLAN 20 is unaffected
-mininet> h1 ping -c 2 h4        # cross-VLAN, still blocked
-```
-
-### Step 9: restore the host (terminal 4 or terminal 2 with curl)
-
-```bash
-curl -s -X POST http://127.0.0.1:8080/release \
-  -H "Content-Type: application/json" \
-  -d '{"mac":"00:00:00:00:00:03"}'
-```
-
-Then `h1 ping -c 2 h3` in the Mininet CLI should succeed again. The
-restore is a clean reversal, which shows the response is reversible.
-
-## What the controller accepts
-
-| Endpoint | Body | Effect |
-|---|---|---|
-| `POST /quarantine` | `{"mac": "...", "reason": "..."}` | Moves the MAC to VLAN 99 (role `quarantined`), flushes its cached flows |
-| `POST /release` | `{"mac": "..."}` | Restores the MAC's VLAN and role from `config/vlan_policy.json` |
-
-Malformed MACs or bodies return HTTP 400.
-
-## Known limitations (be upfront in review)
-
-- **Victim ARP caches are not cleaned up.** Quarantine isolates the
-  attacker. Hosts that already accepted the forged ARP entry keep it until
-  it expires. A real deployment would also send a gratuitous ARP to repair
-  the victim.
-- **Identity is MAC-based.** A spoofed or randomized MAC defeats the
-  policy table. This is the same limitation noted for Module 2.
-- **The REST endpoint has no authentication.** Ryu listens on all
-  interfaces by default. For the demo, start Ryu with
-  `--wsapi-host 127.0.0.1` to keep it local, or see `run_demo.sh`.
-- **One sensor, one interface.** The detector sees traffic crossing the
-  trunk it sniffs. Other trunks or access ports are not covered.
-- **Flood detection is alert-only.** It is not wired to quarantine, because
-  thresholds are not tuned against real traffic.
-- **First-seen-wins resets when the detector restarts.**
+- Identity is MAC-based. A spoofed MAC defeats the policy table.
+- The REST API has no authentication; `run_demo.sh` binds it to 127.0.0.1.
+- The sensor watches one port. Traffic that never crosses the sniffed trunk
+  (for example two hosts on the same switch) is not seen.
+- Quarantine does not repair victims' ARP caches.
+- Detector thresholds are fixed constants, not tuned against real traffic.

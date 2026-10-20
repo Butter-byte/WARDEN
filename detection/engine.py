@@ -7,7 +7,8 @@ detector can be unit-tested with synthetic frames (tests/test_engine.py).
  
 Detectors implemented:
   arp-spoof            ARP reply claims an IP owned by another MAC        -> quarantine
-  vlan-violation       802.1Q tag disagrees with the sender's expected VLAN -> quarantine
+  vlan-violation       802.1Q tag disagrees with the sender's expected VLAN,
+                       or the frame is double-tagged (VLAN hopping)     -> quarantine
   unauthorized-device  MAC not in the policy table sends traffic          -> alert
   mac-flood            many distinct source MACs in a short window        -> alert
   traffic-rate         one source MAC sends an abnormal packet volume     -> alert
@@ -35,7 +36,8 @@ class Frame:
     src_mac: str
     ts: float
     dst_mac: str = BROADCAST
-    vlan: Optional[int] = None          # 802.1Q VID if the frame is tagged
+    vlan: Optional[int] = None          # outermost 802.1Q VID if the frame is tagged
+    inner_vlan: Optional[int] = None    # second 802.1Q VID if double-tagged
     src_ip: Optional[str] = None
     dst_ip: Optional[str] = None
     dst_port: Optional[int] = None      # TCP/UDP destination port
@@ -93,6 +95,8 @@ class ArpSpoofDetector(Detector):
     def observe(self, frame, engine):
         if frame.arp_op not in (1, 2) or not frame.arp_psrc:
             return []
+        if frame.arp_psrc == "0.0.0.0":
+            return []   # ARP probe (RFC 5227): sender IP is unset, not a claim
         ip, claimed_by = frame.arp_psrc, frame.src_mac.lower()
  
         expected = engine.policy.mac_of_ip.get(ip)
@@ -123,6 +127,11 @@ class VlanViolationDetector(Detector):
         if frame.vlan is None:
             return []
         mac = frame.src_mac.lower()
+        if frame.inner_vlan is not None:
+            return [Alert(self.name, "high", mac,
+                          f"double-tagged frame (outer VLAN {frame.vlan}, inner VLAN "
+                          f"{frame.inner_vlan}): possible VLAN hopping",
+                          "quarantine", frame.ts)]
         expected = engine.expected_vlan(mac)
         if frame.vlan != expected:
             return [Alert(self.name, "high", mac,

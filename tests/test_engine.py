@@ -244,3 +244,23 @@ def test_clean_traffic_produces_no_alerts_with_full_engine(policy):
         alerts += eng.observe(f)
     assert alerts == [], [a.message for a in alerts]
  
+
+# ----------------------------------------------------------------------
+# Hardening: ARP probes and VLAN double tagging
+# ----------------------------------------------------------------------
+def test_arp_probe_with_unset_sender_ip_is_ignored(policy):
+    eng = make_engine(policy, [ArpSpoofDetector()])
+    for mac in (STAFF_1, GUEST_2, STAFF_3):
+        assert eng.observe(Frame(src_mac=mac, ts=1, arp_op=1, arp_psrc="0.0.0.0")) == []
+
+
+def test_double_tagged_frame_is_vlan_hopping(policy):
+    eng = make_engine(policy, [VlanViolationDetector()])
+    alerts = eng.observe(Frame(src_mac=STAFF_1, ts=1, vlan=10, inner_vlan=20))
+    assert len(alerts) == 1
+    assert "double-tagged" in alerts[0].message and alerts[0].action == "quarantine"
+
+
+def test_single_tagged_frame_has_no_inner_vlan_alert(policy):
+    eng = make_engine(policy, [VlanViolationDetector()])
+    assert eng.observe(Frame(src_mac=STAFF_1, ts=1, vlan=10, inner_vlan=None)) == []

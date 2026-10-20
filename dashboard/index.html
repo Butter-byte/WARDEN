@@ -1,0 +1,212 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>WARDEN</title>
+<style>
+:root{
+  --bg:#f5f6f8; --panel:#ffffff; --text:#1c2230; --muted:#667085; --line:#e3e6ec;
+  --v10:#2563eb; --v20:#d97706; --v99:#dc2626; --other:#7c3aed; --off:#98a2b3; --ok:#16a34a;
+  --high:#dc2626; --medium:#d97706; --low:#2563eb;
+}
+@media (prefers-color-scheme: dark){
+  :root{ --bg:#0f131a; --panel:#171c26; --text:#e6e9f0; --muted:#8b95a7; --line:#262d3b;
+    --v10:#60a5fa; --v20:#fbbf24; --v99:#f87171; --other:#a78bfa; --off:#566074; --ok:#4ade80;
+    --high:#f87171; --medium:#fbbf24; --low:#60a5fa; }
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);
+  font:14px/1.45 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+header{display:flex;align-items:center;gap:12px;padding:14px 22px;background:var(--panel);
+  border-bottom:1px solid var(--line)}
+header h1{font-size:18px;margin:0;letter-spacing:.14em}
+header .sub{color:var(--muted)}
+.live{margin-left:auto;display:flex;align-items:center;gap:8px;color:var(--muted)}
+.dot{width:9px;height:9px;border-radius:50%;background:var(--ok)}
+.dot.down{background:var(--v99)}
+main{padding:18px 22px;display:grid;gap:16px;max-width:1280px;margin:0 auto}
+.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:12px}
+.card,.panel{background:var(--panel);border:1px solid var(--line);border-radius:10px}
+.card{padding:12px 16px}
+.card .n{font-size:26px;font-weight:650}
+.card .l{color:var(--muted);font-size:12px;text-transform:uppercase;letter-spacing:.06em}
+.panel h2{margin:0;padding:12px 16px;font-size:13px;letter-spacing:.06em;
+  text-transform:uppercase;color:var(--muted);border-bottom:1px solid var(--line);
+  display:flex;align-items:center;gap:10px}
+.panel h2 .right{margin-left:auto;display:flex;gap:8px}
+.body{padding:14px 16px}
+.grid2{display:grid;grid-template-columns:1.1fr 1fr;gap:16px}
+@media (max-width:900px){.grid2{grid-template-columns:1fr}}
+table{width:100%;border-collapse:collapse}
+th,td{text-align:left;padding:8px 10px;border-bottom:1px solid var(--line);font-size:13px}
+th{color:var(--muted);font-weight:600;font-size:12px}
+td.mono,.mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:12px}
+.chip{display:inline-block;padding:1px 8px;border-radius:999px;font-size:12px;font-weight:600;
+  border:1px solid currentColor}
+.v10{color:var(--v10)}.v20{color:var(--v20)}.v99{color:var(--v99)}.vo{color:var(--other)}
+.st-online{color:var(--ok)}.st-offline{color:var(--off)}.st-quarantined{color:var(--v99)}
+.st-unknown{color:var(--medium)}
+button,select{font:inherit;color:var(--text);background:var(--panel);border:1px solid var(--line);
+  border-radius:7px;padding:4px 10px;cursor:pointer}
+button:hover{border-color:var(--muted)}
+button.danger{color:var(--v99);border-color:var(--v99)}
+button.ok{color:var(--ok);border-color:var(--ok)}
+.feed{max-height:340px;overflow:auto}
+.item{display:grid;grid-template-columns:70px 1fr;gap:10px;padding:9px 16px;
+  border-bottom:1px solid var(--line)}
+.item:last-child{border-bottom:0}
+.item .t{color:var(--muted);font-size:12px}
+.tag{font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.04em}
+.sev-high{color:var(--high)}.sev-medium{color:var(--medium)}.sev-low{color:var(--low)}
+.empty{color:var(--muted);padding:18px 16px}
+svg{width:100%;height:auto;display:block}
+svg text{fill:var(--text);font-size:12px}
+.legend{display:flex;gap:14px;flex-wrap:wrap;color:var(--muted);font-size:12px;padding:0 16px 12px}
+.legend i{display:inline-block;width:10px;height:10px;border-radius:50%;margin-right:5px}
+</style>
+</head>
+<body>
+<header>
+  <h1>WARDEN</h1><span class="sub">Context-aware VLAN segmentation &middot; SDN control plane</span>
+  <div class="live"><span id="dot" class="dot"></span><span id="updated">connecting...</span></div>
+</header>
+<main>
+  <div class="cards">
+    <div class="card"><div class="n" id="c-online">-</div><div class="l">Hosts online</div></div>
+    <div class="card"><div class="n" id="c-quar">-</div><div class="l">Quarantined</div></div>
+    <div class="card"><div class="n" id="c-alerts">-</div><div class="l">Alerts</div></div>
+    <div class="card"><div class="n" id="c-high">-</div><div class="l">High severity</div></div>
+  </div>
+
+  <div class="grid2">
+    <section class="panel"><h2>Topology</h2>
+      <div class="body"><svg id="topo" viewBox="0 0 640 300" role="img" aria-label="Network topology"></svg></div>
+      <div class="legend">
+        <span><i style="background:var(--v10)"></i>VLAN 10</span>
+        <span><i style="background:var(--v20)"></i>VLAN 20</span>
+        <span><i style="background:var(--v99)"></i>VLAN 99 / quarantined</span>
+        <span><i style="background:var(--off)"></i>offline</span>
+      </div>
+    </section>
+    <section class="panel"><h2>Hosts</h2>
+      <div class="body" style="padding:0;overflow:auto">
+        <table><thead><tr><th>Host</th><th>VLAN</th><th>Status</th><th></th></tr></thead>
+        <tbody id="hosts"></tbody></table>
+      </div>
+    </section>
+  </div>
+
+  <div class="grid2">
+    <section class="panel"><h2>Alerts
+      <span class="right"><select id="filter"><option value="">all detectors</option></select>
+      <button id="clear">Clear</button></span></h2>
+      <div class="feed" id="alerts"></div>
+    </section>
+    <section class="panel"><h2>Controller events</h2>
+      <div class="feed" id="events"></div>
+    </section>
+  </div>
+</main>
+
+<script>
+const $ = id => document.getElementById(id);
+const esc = s => String(s ?? "").replace(/[&<>"']/g,
+  c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const vclass = v => v===10?"v10":v===20?"v20":v===99?"v99":"vo";
+const vcolor = v => v===10?"var(--v10)":v===20?"var(--v20)":v===99?"var(--v99)":"var(--other)";
+const clock = ts => new Date(ts*1000).toLocaleTimeString([], {hour12:false});
+let state = {hosts:[], switches:[]}, feed = {alerts:[], events:[], counts:{}};
+
+async function api(path, opts){
+  const r = await fetch(path, opts);
+  if(!r.ok) throw new Error(path + " -> " + r.status);
+  return r.json();
+}
+const post = (path, body) => api(path, {method:"POST",
+  headers:{"Content-Type":"application/json"}, body:JSON.stringify(body||{})});
+
+async function refresh(){
+  try{
+    [state, feed] = await Promise.all([api("/state"), api("/alerts?limit=200")]);
+    $("dot").className = "dot"; $("updated").textContent = "live " + new Date().toLocaleTimeString([], {hour12:false});
+    render();
+  }catch(e){ $("dot").className = "dot down"; $("updated").textContent = "controller unreachable"; }
+}
+
+function render(){
+  const online = state.hosts.filter(h=>h.status==="online").length;
+  $("c-online").textContent = online;
+  $("c-quar").textContent = state.quarantined.length;
+  $("c-alerts").textContent = feed.alerts.length;
+  $("c-high").textContent = feed.alerts.filter(a=>a.severity==="high").length;
+  renderTopo(); renderHosts(); renderAlerts(); renderEvents();
+}
+
+function renderHosts(){
+  $("hosts").innerHTML = state.hosts.map(h => {
+    const q = h.status==="quarantined";
+    const btn = q ? `<button class="ok" data-act="release" data-mac="${esc(h.mac)}">Release</button>`
+      : h.status==="offline" ? "" : `<button class="danger" data-act="quarantine" data-mac="${esc(h.mac)}">Quarantine</button>`;
+    return `<tr><td><div>${esc(h.ip||"unregistered")}</div><div class="mono" style="color:var(--muted)">${esc(h.mac)}</div></td>
+      <td><span class="chip ${vclass(h.vlan)}">${esc(h.vlan)}</span>
+          <div style="color:var(--muted);font-size:12px">${esc(h.role)}</div></td>
+      <td class="st-${esc(h.status)}"><b>${esc(h.status)}</b>${h.location?`<div style="color:var(--muted);font-size:12px">s${esc(h.location.dpid)}:${esc(h.location.port)}</div>`:""}</td>
+      <td>${btn}</td></tr>`;
+  }).join("") || `<tr><td class="empty" colspan="4">No hosts seen yet.</td></tr>`;
+}
+
+function renderTopo(){
+  const sw = {1:{x:230,y:150}, 2:{x:410,y:150}};
+  const byDpid = {1:[],2:[]}, unplaced = [];
+  state.hosts.forEach(h => { if(h.status==="unknown" && !h.location) return;
+    (h.location && byDpid[h.location.dpid] ? byDpid[h.location.dpid] : unplaced).push(h); });
+  let out = `<line x1="${sw[1].x}" y1="150" x2="${sw[2].x}" y2="150" stroke="var(--muted)" stroke-width="3"/>
+    <text x="320" y="140" text-anchor="middle" style="fill:var(--muted)">trunk</text>`;
+  const node = (h,x,y,sx) => {
+    const q = h.status==="quarantined", off = h.status==="offline";
+    const col = off ? "var(--off)" : vcolor(h.vlan);
+    return `<line x1="${sx}" y1="150" x2="${x}" y2="${y}" stroke="${col}" stroke-width="2" ${off?'stroke-dasharray="4 4"':""}/>
+      <circle cx="${x}" cy="${y}" r="22" fill="var(--panel)" stroke="${col}" stroke-width="${q?4:2.5}" ${q?'stroke-dasharray="5 3"':""}/>
+      <text x="${x}" y="${y+4}" text-anchor="middle" style="font-weight:700">${esc((h.ip||"?").split(".").pop())}</text>
+      <text x="${x}" y="${y+ (y<150?-30:38)}" text-anchor="middle" style="fill:var(--muted)">${q?"QUARANTINED":"VLAN "+esc(h.vlan)}</text>`;
+  };
+  [1,2].forEach(d => { const list = byDpid[d], sx = sw[d].x;
+    list.forEach((h,i) => { const x = sx + (d===1?-110:110), y = 150 + (i-(list.length-1)/2)*110;
+      out += node(h,x,y,sx); }); });
+  [1,2].forEach(d => { out += `<rect x="${sw[d].x-28}" y="128" width="56" height="44" rx="9" fill="var(--panel)" stroke="var(--text)" stroke-width="2"/>
+    <text x="${sw[d].x}" y="155" text-anchor="middle" style="font-weight:700">s${d}</text>`; });
+  if(unplaced.length) out += `<text x="320" y="292" text-anchor="middle" style="fill:var(--muted)">not attached: ${unplaced.map(h=>esc((h.ip||h.mac))).join(", ")}</text>`;
+  $("topo").innerHTML = out;
+}
+
+function renderAlerts(){
+  const sel = $("filter"), cur = sel.value, names = Object.keys(feed.counts).sort();
+  sel.innerHTML = `<option value="">all detectors</option>` +
+    names.map(n=>`<option ${n===cur?"selected":""} value="${esc(n)}">${esc(n)} (${feed.counts[n]})</option>`).join("");
+  const list = feed.alerts.filter(a => !sel.value || a.detector===sel.value);
+  $("alerts").innerHTML = list.map(a => `<div class="item"><div class="t">${clock(a.ts)}</div>
+    <div><span class="tag sev-${esc(a.severity)}">${esc(a.severity)}</span> <b>${esc(a.detector)}</b>
+    <span class="mono">${esc(a.mac)}</span>${a.action==="quarantine"?' <span class="chip v99">quarantine</span>':""}
+    <div style="color:var(--muted)">${esc(a.message)}</div></div></div>`).join("")
+    || `<div class="empty">No alerts. Traffic is clean.</div>`;
+}
+
+function renderEvents(){
+  $("events").innerHTML = feed.events.map(e => `<div class="item"><div class="t">${clock(e.ts)}</div>
+    <div><span class="tag" style="color:var(--${e.kind==="quarantine"?"v99":e.kind==="release"?"ok":"v10"})">${esc(e.kind)}</span>
+    <span class="mono">${esc(e.mac)}</span><div style="color:var(--muted)">${esc(e.text)}</div></div></div>`).join("")
+    || `<div class="empty">No events yet.</div>`;
+}
+
+document.addEventListener("click", async ev => {
+  const b = ev.target.closest("button[data-act]"); if(!b) return;
+  const body = {mac:b.dataset.mac}; if(b.dataset.act==="quarantine") body.reason = "manual (dashboard)";
+  try{ await post("/"+b.dataset.act, body); refresh(); }catch(e){ alert(e.message); }
+});
+$("clear").onclick = async () => { await post("/alerts/clear"); refresh(); };
+$("filter").onchange = renderAlerts;
+refresh(); setInterval(refresh, 2000);
+</script>
+</body>
+</html>

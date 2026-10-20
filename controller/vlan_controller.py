@@ -16,6 +16,7 @@ Run:
 
 import json
 import os
+import time
 
 from ryu.base import app_manager
 from ryu.controller import ofp_event
@@ -28,6 +29,8 @@ from ryu.app.wsgi import ControllerBase, WSGIApplication, route, Response
 
 from vlan_manager import VLANManager
 from mobility_manager import MobilityManager
+from alert_store import AlertStore
+from state_view import build_state
 
 import re
 
@@ -35,6 +38,7 @@ MAC_RE = re.compile(r"^([0-9a-f]{2}:){5}[0-9a-f]{2}$")
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 POLICY_PATH = os.path.join(BASE_DIR, "config", "vlan_policy.json")
+DASHBOARD_PATH = os.path.join(BASE_DIR, "dashboard", "index.html")
 PORTS_PATH = os.path.join(BASE_DIR, "config", "switch_ports.json")
 
 FLOW_IDLE_TIMEOUT = 15
@@ -57,6 +61,11 @@ class VlanController(app_manager.RyuApp):
         self.datapaths = {}
 
         self._load_config()
+        with open(POLICY_PATH) as f:
+            self.ips = {m.lower(): e.get("ip")
+                        for m, e in json.load(f)["policy"].items()}
+        self.alerts = AlertStore()
+        self.quarantined = {}   # mac -> {"reason": str, "ts": float}
         self.vlan_manager = VLANManager({
             "policy": {
                 mac: {
@@ -180,6 +189,8 @@ class VlanController(app_manager.RyuApp):
         mac = mac.lower()
         q_vlan = self.vlan_manager.default_vlan  # 99 by policy
         self._set_host_vlan(mac, q_vlan, role="quarantined")
+        self.quarantined[mac] = {"reason": reason, "ts": time.time()}
+        self.alerts.add_event("quarantine", "VLAN %s: %s" % (q_vlan, reason), mac=mac)
         self.logger.warning(
             "[QUARANTINE] host=%s moved to isolated VLAN=%s (reason: %s)",
             mac, q_vlan, reason,
@@ -191,11 +202,20 @@ class VlanController(app_manager.RyuApp):
         original_vlan = self.policy.get(mac, self.default_vlan)
         original_role = self.roles.get(mac, "unauthenticated")
         self._set_host_vlan(mac, original_vlan, role=original_role)
+        self.quarantined.pop(mac, None)
+        self.alerts.add_event("release", "restored to VLAN %s (%s)" % (original_vlan, original_role), mac=mac)
         self.logger.info(
             "[RELEASE] host=%s restored to policy VLAN=%s role=%s",
             mac, original_vlan, original_role,
         )
         return {"status": "released", "mac": mac, "vlan": original_vlan, "role": original_role}
+
+    def state_snapshot(self):
+        seen = {mac for table in self.mac_table.values() for mac in table}
+        return build_state(
+            self.vlan_manager, self.ips, self.policy,
+            dict(self.mobility_manager.locations), self.quarantined,
+            seen, self.datapaths.keys())
 
     def _add_flow(self, datapath, priority, match, actions, idle_timeout=0):
         ofproto = datapath.ofproto
@@ -253,6 +273,11 @@ class VlanController(app_manager.RyuApp):
                 dpid,
                 in_port,
             )
+            self.alerts.add_event(
+                "mobility",
+                "dpid %s port %s -> dpid %s port %s" % (
+                    previous["dpid"], previous["port"], dpid, in_port),
+                mac=src)
             # Any flow cached anywhere in the topology that references this
             # host's MAC (as either src or dst) now points at a stale port
             # and will silently blackhole traffic until it idle-times-out.
@@ -372,7 +397,7 @@ class VlanController(app_manager.RyuApp):
 
 
 class QuarantineController(ControllerBase):
-    """REST hook used by the Module 3 detector (detection/arp_spoof_detector.py).
+    """REST API used by the sensor (detection/sensor.py) and the dashboard.
     POST /quarantine {"mac": "...", "reason": "..."}
     POST /release    {"mac": "..."}
     """
@@ -412,3 +437,42 @@ class QuarantineController(ControllerBase):
         if body is None:
             return self._reply(400, {"error": result})
         return self._reply(200, self.app.release_host(result))
+
+    # ---- Dashboard + read/write API (Priority 1) ----
+    @route("warden", "/", methods=["GET"])
+    def dashboard(self, req, **kwargs):
+        try:
+            with open(DASHBOARD_PATH, "rb") as f:
+                body = f.read()
+        except OSError:
+            return Response(status=404, body=b"dashboard/index.html not found")
+        return Response(content_type="text/html", charset="utf-8", body=body)
+
+    @route("warden", "/state", methods=["GET"])
+    def state(self, req, **kwargs):
+        return self._reply(200, self.app.state_snapshot())
+
+    @route("warden", "/alerts", methods=["GET"])
+    def list_alerts(self, req, **kwargs):
+        try:
+            limit = int(req.GET.get("limit", 100))
+        except ValueError:
+            limit = 100
+        store = self.app.alerts
+        return self._reply(200, {"alerts": store.list_alerts(limit),
+                                 "events": store.list_events(50),
+                                 "counts": store.counts()})
+
+    @route("warden", "/alerts", methods=["POST"])
+    def add_alert(self, req, **kwargs):
+        try:
+            body = json.loads(req.body.decode("utf-8"))
+            alert = self.app.alerts.add_alert(body)
+        except (ValueError, UnicodeDecodeError) as e:
+            return self._reply(400, {"error": str(e)})
+        return self._reply(200, alert)
+
+    @route("warden", "/alerts/clear", methods=["POST"])
+    def clear_alerts(self, req, **kwargs):
+        self.app.alerts.clear_alerts()
+        return self._reply(200, {"status": "cleared"})
